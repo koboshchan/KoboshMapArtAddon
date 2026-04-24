@@ -53,9 +53,15 @@ public final class LitematicaMissingFlyHack extends Hack
         "Vertical Speed", "Vertical fly speed used while override is active.",
         1.0, 0.05, 5, 0.05, ValueDisplay.DECIMAL);
 
+    private final SliderSetting approachHeight = new SliderSetting(
+        "Approach Height",
+        "How many blocks above the missing block to stop at. 0 = stop at block level, 1–3 = stop that many blocks above.",
+        1, 0, 3, 1, ValueDisplay.INTEGER);
+
     private MissingBlockPathFinder pathFinder;
     private PathProcessor processor;
     private BlockPos currentGoal;
+    private int missingBlocksLeft;
     private boolean enabledFlightForThisHack;
     private boolean notifiedNoMissing;
     private boolean foundMissingThisRun;
@@ -69,15 +75,18 @@ public final class LitematicaMissingFlyHack extends Hack
         addSetting(speedOverride);
         addSetting(overrideHorizontalSpeed);
         addSetting(overrideVerticalSpeed);
+        addSetting(approachHeight);
     }
 
     @Override
     public String getRenderName() {
-        if (!showCoords.isChecked() || currentGoal == null) {
-            return getName();
-        }
-        return getName() + " [" + currentGoal.getX() + ", " + currentGoal.getY()
-            + ", " + currentGoal.getZ() + "]";
+        String name = getName();
+        if (missingBlocksLeft > 0)
+            name += " (" + missingBlocksLeft + " left)";
+        if (showCoords.isChecked() && currentGoal != null)
+            name += " [" + currentGoal.getX() + ", " + currentGoal.getY()
+                + ", " + currentGoal.getZ() + "]";
+        return name;
     }
 
     @Override
@@ -180,8 +189,13 @@ public final class LitematicaMissingFlyHack extends Hack
     }
 
     private void navigateTo(BlockPos goal) {
+        // Offset the pathfinding target by the configured number of blocks above
+        // the missing block. At 0, we stop adjacent to the block itself; at 1+,
+        // the player stops that many blocks above it.
+        BlockPos target = goal.up(approachHeight.getValueI());
+
         if (pathFinder == null) {
-            pathFinder = new MissingBlockPathFinder(goal, thinkSpeed.getValueI());
+            pathFinder = new MissingBlockPathFinder(target, thinkSpeed.getValueI());
         }
 
         // Compute the path — may span multiple ticks.
@@ -201,7 +215,7 @@ public final class LitematicaMissingFlyHack extends Hack
         // If the world changed and the path is no longer valid, recompute.
         if (processor != null
             && !pathFinder.isPathStillValid(processor.getIndex())) {
-            pathFinder = new MissingBlockPathFinder(goal, thinkSpeed.getValueI());
+            pathFinder = new MissingBlockPathFinder(target, thinkSpeed.getValueI());
             return;
         }
 
@@ -266,12 +280,14 @@ public final class LitematicaMissingFlyHack extends Hack
         Vec3d eyes = RotationUtils.getEyesPos();
         BlockPos closest = null;
         double closestDistSq = Double.MAX_VALUE;
+        int count = 0;
 
         for (BlockPos pos : verifier.getSelectedMismatchBlockPositionsForRender()) {
             BlockMismatch mismatch = verifier.getMismatchForPosition(pos);
             if (mismatch == null || mismatch.mismatchType != MismatchType.MISSING) {
                 continue;
             }
+            count++;
             double distSq = pos.getSquaredDistance(eyes);
             if (distSq < closestDistSq) {
                 closestDistSq = distSq;
@@ -279,6 +295,7 @@ public final class LitematicaMissingFlyHack extends Hack
             }
         }
 
+        missingBlocksLeft = count;
         return closest;
     }
 
@@ -286,6 +303,7 @@ public final class LitematicaMissingFlyHack extends Hack
         pathFinder = null;
         processor = null;
         currentGoal = null;
+        missingBlocksLeft = 0;
         PathProcessor.releaseControls();
     }
 

@@ -1,49 +1,33 @@
-# WurstAddon
+# KoboshMapArtAddon
 
-## Overview
+A Wurst7 addon for Minecraft 1.21.10.
 
-This project is a Wurst7 addon for Minecraft 1.21.1.
+**Requirements:**
+- [koboshchan/Wurst7](https://github.com/koboshchan/Wurst7)
+- [koboshchan/litematica-printer](https://github.com/koboshchan/litematica-printer) — requires an airplace fork of Litematica
 
-It uses Java ServiceLoader to register an addon provider that contributes hacks
-to Wurst at startup.
+## Hacks
 
-## Current Example
+### LitematicaMissingFly
 
-`ExampleHack` demonstrates a minimal hack:
+Automatically pathfinds and flies to missing blocks in the active Litematica schematic verifier.
 
-- Sends "hello world" when enabled.
-- Disables itself immediately after running.
+**Settings:**
+- **Think Speed** — A* nodes processed per tick (100–5000)
+- **Approach Height** — blocks above the missing block to stop at (0–3)
+- **Auto Flight** — enables/disables FlightHack automatically on toggle
+- **Show Coordinates** — shows target block coords in the HackList
+- **Flight Speed Override** — when checked, replaces FlightHack's speeds with the two sliders below
+  - **Horizontal Speed**
+  - **Vertical Speed**
 
-## How Addon Registration Works
+**Requirements:** Select a schematic placement in Litematica and run the verifier before enabling.
 
-1. Provider class: `WurstAddonHackAddon` implements `net.wurstclient.addon.Addon`.
-2. Service file: `src/client/resources/META-INF/services/net.wurstclient.addon.Addon`.
-3. Service file content points to the provider class.
+## Build
 
-No manual registration in `WurstaddonClient` is required.
+1. Build Wurst first from `wurst7-base` or `../Wurst7` (branch `master`)
+2. `./gradlew build`
 
-## Build Requirements
+## Registration
 
-1. Build Wurst first, either in:
-
-   - `wurst7-base`, or
-   - `../Wurst7`
-
-requires koboshchan/Wurst7 for add on support
-
-current supported branches are `master` and `1.21.1`
-
-2. Build this addon:
-
-   - `./gradlew build`
-
-`build.gradle` automatically resolves the newest matching Wurst jar from those
-two locations.
-
-## Validation
-
-When Wurst starts, verify a log line similar to:
-
-- `[Wurst] Loaded addon: WurstAddon (...)`
-
-Then confirm `Example Hack` appears in the Wurst hack list and can be toggled.
+Uses Java ServiceLoader — `WurstAddonHackAddon` implements `net.wurstclient.addon.Addon` via `META-INF/services`.
