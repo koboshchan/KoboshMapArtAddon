@@ -1,4 +1,5 @@
 {
     "description.wurst.hack.examplehack": "Example Hack description",
-    "description.wurst.hack.litematicamissingfly": "Automatically pathfinds and flies to missing blocks in the active Litematica schematic verifier."
+    "description.wurst.hack.litematicamissingfly": "Automatically pathfinds and flies to missing blocks in the active Litematica schematic verifier.",
+    "description.wurst.hack.schematicairwalk": "Walk on ghost blocks (missing blocks) from the active Litematica schematic."
 }

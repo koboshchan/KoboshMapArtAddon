@@ -4,6 +4,7 @@ import net.wurstclient.addon.Addon;
 import net.wurstclient.command.Command;
 import net.wurstclient.hack.Hack;
 import com.kobosh.koboshmapartaddon.client.hack.LitematicaMissingFlyHack;
+import com.kobosh.koboshmapartaddon.client.hack.SchematicAirWalkHack;
 
 /**
  * WurstAddon provider for registering hacks and commands with Wurst7.
@@ -11,7 +12,8 @@ import com.kobosh.koboshmapartaddon.client.hack.LitematicaMissingFlyHack;
 public class WurstAddonHackAddon implements Addon {
 
     private final Hack[] hacks = {
-            new LitematicaMissingFlyHack()
+            new LitematicaMissingFlyHack(),
+            new SchematicAirWalkHack()
     };
 
     @Override
