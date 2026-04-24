@@ -1,4 +1,4 @@
-name: Build WurstAddon
+name: Build KoboshMapArtAddon
 
 on:
   push:
@@ -36,7 +36,7 @@ jobs:
         ./gradlew build -x test
         cd ..
 
-    - name: Build WurstAddon
+    - name: Build KoboshMapArtAddon
       run: |
         chmod +x gradlew
         ./gradlew build
@@ -44,10 +44,10 @@ jobs:
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: WurstAddon-build
+        name: mod-build
         path: |
-          build/libs/WurstAddon-*.jar
-          wurst7-base/build/libs/Wurst-Client-*.jar
+          build/libs/*.jar
+          wurst7-base/build/libs/*.jar
         retention-days: 30
 
     - name: Create Release (on tag)
@@ -55,7 +55,7 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          build/libs/WurstAddon-*.jar
-          wurst7-base/build/libs/Wurst-Client-*.jar
+          build/libs/*.jar
+          wurst7-base/build/libs/*.jar
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

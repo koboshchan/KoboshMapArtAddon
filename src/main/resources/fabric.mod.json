@@ -1,29 +1,29 @@
 {
   "schemaVersion": 1,
-  "id": "wurstaddon",
+  "id": "koboshmapartaddon",
   "version": "${version}",
-  "name": "WurstAddon",
+  "name": "KoboshMapArtAddon",
   "description": "addon for wurst client",
   "authors": [],
   "contact": {},
   "license": "All-Rights-Reserved",
-  "icon": "assets/wurstaddon/icon.png",
+  "icon": "assets/koboshmapartaddon/icon.png",
   "environment": "*",
   "entrypoints": {
     "fabric-datagen": [
-      "com.kobosh.wurstaddon.client.WurstaddonDataGenerator"
+      "com.kobosh.koboshmapartaddon.client.WurstAddonDataGenerator"
     ],
     "client": [
-      "com.kobosh.wurstaddon.client.WurstaddonClient"
+      "com.kobosh.koboshmapartaddon.client.WurstAddonClient"
     ],
     "main": [
-      "com.kobosh.wurstaddon.Wurstaddon"
+      "com.kobosh.koboshmapartaddon.WurstAddon"
     ]
   },
   "mixins": [
-    "wurstaddon.mixins.json",
+    "koboshmapartaddon.mixins.json",
     {
-      "config": "wurstaddon.client.mixins.json",
+      "config": "koboshmapartaddon.client.mixins.json",
       "environment": "client"
     }
   ],
