@@ -263,17 +263,55 @@ public final class LitematicaMissingFlyHack extends Hack
                 arrivedTicks = 0;
                 PathProcessor.releaseControls();
             } else {
-                // Apply vertical velocity ourselves.
-                // FlyPathProcessor sets keySneak for going down, but FlightHack
-                // checks isActuallyDown() (physical key only) and ignores
-                // programmatic setDown(true) — so downward movement is silently
-                // dropped. We fix that here by applying the velocity directly.
-                //
-                // When speed override is active, we also replace FlightHack's
-                // upward velocity with our custom speed.
-                applyVerticalOverride();
+                // Freecam camera mode makes FlightHack ignore movement updates,
+                // so drive the real player directly in that case.
+                if (WURST.getHax().freecamHack.isMovingCamera()) {
+                    applyFreecamCameraBypassMovement();
+                } else {
+                    // Apply vertical velocity ourselves.
+                    // FlyPathProcessor sets keySneak for going down, but FlightHack
+                    // checks isActuallyDown() (physical key only) and ignores
+                    // programmatic setDown(true) — so downward movement is silently
+                    // dropped. We fix that here by applying the velocity directly.
+                    //
+                    // When speed override is active, we also replace FlightHack's
+                    // upward velocity with our custom speed.
+                    applyVerticalOverride();
+                }
             }
         }
+    }
+
+    /**
+     * When Freecam is set to move the camera, FlightHack intentionally stops
+     * applying movement. We therefore apply direct velocity to the real player
+     * from the current movement keys that FlyPathProcessor set this tick.
+     */
+    private void applyFreecamCameraBypassMovement() {
+        double hSpeed = speedOverride.isChecked()
+            ? overrideHorizontalSpeed.getValue()
+            : WURST.getHax().flightHack.getHorizontalSpeed();
+        double vSpeed = speedOverride.isChecked()
+            ? overrideVerticalSpeed.getValue()
+            : WURST.getHax().flightHack.getActualVerticalSpeed();
+
+        double vx = 0;
+        double vz = 0;
+        if (MC.options.forwardKey.isPressed()) {
+            double yawRad = Math.toRadians(MC.player.getYaw());
+            vx = -Math.sin(yawRad) * hSpeed;
+            vz = Math.cos(yawRad) * hSpeed;
+        }
+
+        double vy = 0;
+        if (MC.options.sneakKey.isPressed()) {
+            vy -= vSpeed;
+        }
+        if (MC.options.jumpKey.isPressed()) {
+            vy += vSpeed;
+        }
+
+        MC.player.setVelocity(vx, vy, vz);
     }
 
     /**

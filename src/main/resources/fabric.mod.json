@@ -31,7 +31,10 @@
     "fabricloader": ">=${loader_version}",
     "fabric-api": "*",
     "minecraft": "${minecraft_version}",
-    "wurst": "*"
+    "wurst": "*",
+    "litematica_printer": "*",
+    "malilib": "*",
+    "litematica": "*"
   },
   "custom": {
     "modmenu": {
