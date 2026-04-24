@@ -55,13 +55,21 @@ public final class LitematicaMissingFlyHack extends Hack
 
     private final SliderSetting approachHeight = new SliderSetting(
         "Approach Height",
-        "How many blocks above the missing block to stop at. 0 = stop at block level, 1–3 = stop that many blocks above.",
-        1, 0, 3, 1, ValueDisplay.INTEGER);
+        "How many blocks above the missing block to stop at. 0 = stop at block level, 1–5 = stop that many blocks above.",
+        0, 0, 5, 1, ValueDisplay.INTEGER);
+
+    private final CheckboxSetting skipStuck = new CheckboxSetting(
+        "Skip Stuck Blocks",
+        "If a block is still missing 5 seconds after arriving, move to the next closest block at least 5 blocks away.",
+        false);
 
     private MissingBlockPathFinder pathFinder;
     private PathProcessor processor;
     private BlockPos currentGoal;
     private int missingBlocksLeft;
+    // -1 = not in arrived state; >= 0 = ticks spent waiting at a goal that is
+    // still missing after the path processor completed.
+    private int arrivedTicks = -1;
     private boolean enabledFlightForThisHack;
     private boolean notifiedNoMissing;
     private boolean foundMissingThisRun;
@@ -76,13 +84,17 @@ public final class LitematicaMissingFlyHack extends Hack
         addSetting(overrideHorizontalSpeed);
         addSetting(overrideVerticalSpeed);
         addSetting(approachHeight);
+        addSetting(skipStuck);
     }
 
     @Override
     public String getRenderName() {
         String name = getName();
-        if (missingBlocksLeft > 0)
-            name += " (" + missingBlocksLeft + " left)";
+        if (missingBlocksLeft > 0) {
+            String countStr = missingBlocksLeft >= 1000
+                ? "1000+" : String.valueOf(missingBlocksLeft);
+            name += " (" + countStr + " left)";
+        }
         if (showCoords.isChecked() && currentGoal != null)
             name += " [" + currentGoal.getX() + ", " + currentGoal.getY()
                 + ", " + currentGoal.getZ() + "]";
@@ -163,6 +175,26 @@ public final class LitematicaMissingFlyHack extends Hack
             foundMissingThisRun = true;
         }
 
+        // Handle "arrived" state: we reached the goal area but the block is
+        // still missing. After 5 seconds (100 ticks) try the closest alternative
+        // at least 5 blocks away. If none exists, keep waiting.
+        if (skipStuck.isChecked() && currentGoal != null && arrivedTicks >= 0) {
+            arrivedTicks++;
+            if (arrivedTicks >= 100) {
+                BlockPos alt =
+                    findAlternativeMissingBlock(verifier, currentGoal, 5);
+                if (alt != null) {
+                    currentGoal = alt;
+                    arrivedTicks = -1; // exit arrived state, navigate below
+                } else {
+                    arrivedTicks = 0; // no alternative — reset and retry in 5 s
+                    return;
+                }
+            } else {
+                return; // still waiting
+            }
+        }
+
         navigateTo(currentGoal);
     }
 
@@ -224,10 +256,11 @@ public final class LitematicaMissingFlyHack extends Hack
             processor.process();
 
             if (processor.isDone()) {
-                // Reached the target area. Clear state and pick a new goal next tick.
+                // Arrived at the target area. Transition to the "arrived" waiting
+                // state — keep currentGoal so stuck detection can run in onUpdate.
                 pathFinder = null;
                 processor = null;
-                currentGoal = null;
+                arrivedTicks = 0;
                 PathProcessor.releaseControls();
             } else {
                 // Apply vertical velocity ourselves.
@@ -276,6 +309,32 @@ public final class LitematicaMissingFlyHack extends Hack
         return mismatch != null && mismatch.mismatchType == MismatchType.MISSING;
     }
 
+    /**
+     * Finds the closest missing block that is at least {@code minDist} blocks
+     * away from {@code exclude}. Used to escape a stuck position.
+     */
+    private BlockPos findAlternativeMissingBlock(SchematicVerifier verifier,
+        BlockPos exclude, double minDist) {
+        Vec3d eyes = RotationUtils.getEyesPos();
+        BlockPos closest = null;
+        double closestDistSq = Double.MAX_VALUE;
+        double minDistSq = minDist * minDist;
+
+        for (BlockPos pos : verifier.getSelectedMismatchBlockPositionsForRender()) {
+            BlockMismatch mismatch = verifier.getMismatchForPosition(pos);
+            if (mismatch == null || mismatch.mismatchType != MismatchType.MISSING)
+                continue;
+            if (pos.getSquaredDistance(Vec3d.ofCenter(exclude)) < minDistSq)
+                continue;
+            double distSq = pos.getSquaredDistance(eyes);
+            if (distSq < closestDistSq) {
+                closestDistSq = distSq;
+                closest = pos;
+            }
+        }
+        return closest;
+    }
+
     private BlockPos findClosestMissingBlock(SchematicVerifier verifier) {
         Vec3d eyes = RotationUtils.getEyesPos();
         BlockPos closest = null;
@@ -304,6 +363,7 @@ public final class LitematicaMissingFlyHack extends Hack
         processor = null;
         currentGoal = null;
         missingBlocksLeft = 0;
+        arrivedTicks = -1;
         PathProcessor.releaseControls();
     }
 
