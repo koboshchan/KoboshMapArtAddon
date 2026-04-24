@@ -1,32 +1,61 @@
 package com.kobosh.koboshmapartaddon.client.hack;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-
 import fi.dy.masa.litematica.data.DataManager;
 import fi.dy.masa.litematica.schematic.placement.SchematicPlacement;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.BlockMismatch;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.MismatchType;
+import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.wurstclient.Category;
 import net.wurstclient.SearchTags;
 import net.wurstclient.ai.PathFinder;
 import net.wurstclient.ai.PathProcessor;
+import net.wurstclient.commands.PathCmd;
+import net.wurstclient.events.AirStrafingSpeedListener;
+import net.wurstclient.events.AirStrafingSpeedListener.AirStrafingSpeedEvent;
+import net.wurstclient.events.RenderListener;
 import net.wurstclient.events.UpdateListener;
 import net.wurstclient.hack.Hack;
+import net.wurstclient.settings.CheckboxSetting;
+import net.wurstclient.settings.SliderSetting;
+import net.wurstclient.settings.SliderSetting.ValueDisplay;
 import net.wurstclient.util.ChatUtils;
 import net.wurstclient.util.RotationUtils;
 
 @SearchTags({"litematica", "schema", "schematic", "missing", "pathfind", "fly"})
-public final class LitematicaMissingFlyHack extends Hack implements UpdateListener {
+public final class LitematicaMissingFlyHack extends Hack
+    implements UpdateListener, RenderListener, AirStrafingSpeedListener {
+
+    private final SliderSetting thinkSpeed = new SliderSetting("Think Speed",
+        "How many path nodes to process per tick. Higher values find paths faster but may cause lag.",
+        1000, 100, 5000, 100, ValueDisplay.INTEGER);
+
+    private final CheckboxSetting autoFlight = new CheckboxSetting("Auto Flight",
+        "Automatically enable Flight when this hack is toggled on, and disable it when toggled off.",
+        true);
+
+    private final CheckboxSetting showCoords = new CheckboxSetting(
+        "Show Coordinates",
+        "Show the current target block coordinates in the HackList.", true);
+
+    private final CheckboxSetting speedOverride = new CheckboxSetting(
+        "Flight Speed Override",
+        "Override FlightHack's speeds while navigating. Restores original speeds when disabled.",
+        false);
+
+    private final SliderSetting overrideHorizontalSpeed = new SliderSetting(
+        "Horizontal Speed", "Horizontal fly speed used while override is active.",
+        1.0, 0.05, 10, 0.05, ValueDisplay.DECIMAL);
+
+    private final SliderSetting overrideVerticalSpeed = new SliderSetting(
+        "Vertical Speed", "Vertical fly speed used while override is active.",
+        1.0, 0.05, 5, 0.05, ValueDisplay.DECIMAL);
 
     private MissingBlockPathFinder pathFinder;
     private PathProcessor processor;
     private BlockPos currentGoal;
-    private BlockPos cachedTargetMissing;
     private boolean enabledFlightForThisHack;
     private boolean notifiedNoMissing;
     private boolean foundMissingThisRun;
@@ -34,24 +63,44 @@ public final class LitematicaMissingFlyHack extends Hack implements UpdateListen
     public LitematicaMissingFlyHack() {
         super("LitematicaMissingFly");
         setCategory(Category.MOVEMENT);
+        addSetting(thinkSpeed);
+        addSetting(autoFlight);
+        addSetting(showCoords);
+        addSetting(speedOverride);
+        addSetting(overrideHorizontalSpeed);
+        addSetting(overrideVerticalSpeed);
+    }
+
+    @Override
+    public String getRenderName() {
+        if (!showCoords.isChecked() || currentGoal == null) {
+            return getName();
+        }
+        return getName() + " [" + currentGoal.getX() + ", " + currentGoal.getY()
+            + ", " + currentGoal.getZ() + "]";
     }
 
     @Override
     protected void onEnable() {
         notifiedNoMissing = false;
         foundMissingThisRun = false;
+        enabledFlightForThisHack = false;
 
-        if (!WURST.getHax().flightHack.isEnabled()) {
+        if (autoFlight.isChecked() && !WURST.getHax().flightHack.isEnabled()) {
             WURST.getHax().flightHack.setEnabled(true);
             enabledFlightForThisHack = true;
         }
 
         EVENTS.add(UpdateListener.class, this);
+        EVENTS.add(RenderListener.class, this);
+        EVENTS.add(AirStrafingSpeedListener.class, this);
     }
 
     @Override
     protected void onDisable() {
         EVENTS.remove(UpdateListener.class, this);
+        EVENTS.remove(RenderListener.class, this);
+        EVENTS.remove(AirStrafingSpeedListener.class, this);
         clearPathing();
 
         if (enabledFlightForThisHack) {
@@ -66,151 +115,202 @@ public final class LitematicaMissingFlyHack extends Hack implements UpdateListen
             return;
         }
 
-        SchematicPlacement placement = DataManager.getSchematicPlacementManager()
-            .getSelectedSchematicPlacement();
+        SchematicPlacement placement =
+            DataManager.getSchematicPlacementManager()
+                .getSelectedSchematicPlacement();
         if (placement == null) {
-            failAndDisable("No selected Litematica schematic placement.");
+            ChatUtils.error("No selected Litematica schematic placement.");
+            setEnabled(false);
             return;
         }
 
         SchematicVerifier verifier = placement.getSchematicVerifier();
 
-        // Determine if we need to search for a new target block.
-        // Only search if: no target cached, cached target no longer missing, or pathfinder failed.
-        boolean needsNewTarget = cachedTargetMissing == null
-            || (pathFinder != null && pathFinder.isFailed())
-            || !isBlockStillMissing(verifier, cachedTargetMissing);
+        // If current target is no longer missing, drop it and search for a new one.
+        if (currentGoal != null && !isBlockStillMissing(verifier, currentGoal)) {
+            clearPathing();
+        }
 
-        if (needsNewTarget) {
-            List<BlockPos> selectedMissingBlocks = getSelectedMissingBlocks(verifier);
-            if (selectedMissingBlocks.isEmpty()) {
+        // Find a new target block if we don't have one.
+        if (currentGoal == null) {
+            currentGoal = findClosestMissingBlock(verifier);
+
+            if (currentGoal == null) {
                 if (!notifiedNoMissing) {
                     if (foundMissingThisRun) {
-                        ChatUtils.message("No selected missing blocks left. Done.");
+                        ChatUtils.message(
+                            "No selected missing blocks left. Done!");
                     } else {
                         ChatUtils.message(
-                            "No selected missing blocks found. Verify the schematic first or it may already be complete.");
+                            "No selected missing blocks found."
+                                + " Run the verifier first or schematic may be complete.");
                     }
                     notifiedNoMissing = true;
                 }
-
-                clearPathing();
-                cachedTargetMissing = null;
                 return;
             }
 
             notifiedNoMissing = false;
             foundMissingThisRun = true;
-            cachedTargetMissing = getClosest(selectedMissingBlocks);
         }
 
-        if (cachedTargetMissing == null) {
-            clearPathing();
+        navigateTo(currentGoal);
+    }
+
+    @Override
+    public void onRender(MatrixStack matrixStack, float partialTicks) {
+        if (pathFinder == null) {
             return;
         }
-
-        BlockPos goal = cachedTargetMissing.up();
-        moveToGoal(goal);
+        PathCmd pathCmd = WURST.getCmds().pathCmd;
+        pathFinder.renderPath(matrixStack, pathCmd.isDebugMode(),
+            pathCmd.isDepthTest());
     }
 
     /**
-     * Check if a block is still marked as MISSING in the verifier without iterating all blocks.
+     * Intercepts the horizontal strafe speed used by FlightHack so that our
+     * override sliders take effect without touching FlightHack's own settings.
+     * Fires after FlightHack's listener (registered later), so it wins.
      */
-    private boolean isBlockStillMissing(SchematicVerifier verifier, BlockPos block) {
-        BlockMismatch mismatch = verifier.getMismatchForPosition(block);
-        return mismatch != null && mismatch.mismatchType == MismatchType.MISSING;
+    @Override
+    public void onGetAirStrafingSpeed(AirStrafingSpeedEvent event) {
+        if (speedOverride.isChecked() && processor != null && !processor.isDone()) {
+            event.setSpeed(overrideHorizontalSpeed.getValueF());
+        }
     }
 
-    private List<BlockPos> getSelectedMissingBlocks(SchematicVerifier verifier) {
-        ArrayList<BlockPos> selectedMissingBlocks = new ArrayList<>();
-
-        for (BlockPos pos : verifier.getSelectedMismatchBlockPositionsForRender()) {
-            BlockMismatch mismatch = verifier.getMismatchForPosition(pos);
-            if (mismatch != null && mismatch.mismatchType == MismatchType.MISSING) {
-                selectedMissingBlocks.add(pos);
-            }
+    private void navigateTo(BlockPos goal) {
+        if (pathFinder == null) {
+            pathFinder = new MissingBlockPathFinder(goal, thinkSpeed.getValueI());
         }
 
-        return selectedMissingBlocks;
-    }
-
-    private BlockPos getClosest(List<BlockPos> candidates) {
-        Vec3d eyes = RotationUtils.getEyesPos();
-        return candidates.stream()
-            .min(Comparator.comparingDouble(pos -> pos.getSquaredDistance(eyes)))
-            .orElse(null);
-    }
-
-    private void moveToGoal(BlockPos goal) {
-        if (pathFinder == null || pathFinder.isDone() || pathFinder.isFailed()
-            || !goal.equals(currentGoal)) {
-            currentGoal = goal;
-            pathFinder = new MissingBlockPathFinder(goal);
-            processor = null;
-        }
-
+        // Compute the path — may span multiple ticks.
         if (!pathFinder.isDone() && !pathFinder.isFailed()) {
             PathProcessor.lockControls();
-
             pathFinder.think();
+
             if (!pathFinder.isDone() && !pathFinder.isFailed()) {
-                return;
+                return; // Still thinking — come back next tick.
             }
 
             pathFinder.formatPath();
             processor = pathFinder.getProcessor();
+            // Fall through and start processing immediately.
         }
 
-        if (processor != null && !pathFinder.isPathStillValid(processor.getIndex())) {
-            pathFinder = new MissingBlockPathFinder(pathFinder);
-            processor = null;
+        // If the world changed and the path is no longer valid, recompute.
+        if (processor != null
+            && !pathFinder.isPathStillValid(processor.getIndex())) {
+            pathFinder = new MissingBlockPathFinder(goal, thinkSpeed.getValueI());
             return;
         }
 
+        // Follow the path.
         if (processor != null) {
             processor.process();
 
             if (processor.isDone()) {
-                clearPathing();
+                // Reached the target area. Clear state and pick a new goal next tick.
+                pathFinder = null;
+                processor = null;
+                currentGoal = null;
+                PathProcessor.releaseControls();
+            } else {
+                // Apply vertical velocity ourselves.
+                // FlyPathProcessor sets keySneak for going down, but FlightHack
+                // checks isActuallyDown() (physical key only) and ignores
+                // programmatic setDown(true) — so downward movement is silently
+                // dropped. We fix that here by applying the velocity directly.
+                //
+                // When speed override is active, we also replace FlightHack's
+                // upward velocity with our custom speed.
+                applyVerticalOverride();
             }
         }
+    }
+
+    /**
+     * Called each tick after processor.process() to:
+     * 1. Fix downward movement (FlightHack ignores programmatic keySneak).
+     * 2. Replace upward velocity when speed override is enabled.
+     *
+     * My UpdateListener is registered after FlightHack's (we enable FlightHack
+     * first in onEnable), so it fires second — FlightHack has already zeroed
+     * deltaMovement and applied its own vertical component. Any velocity we
+     * set here is the final value for this tick's physics step.
+     */
+    private void applyVerticalOverride() {
+        double vSpeed = speedOverride.isChecked()
+            ? overrideVerticalSpeed.getValue()
+            : WURST.getHax().flightHack.getActualVerticalSpeed();
+
+        Vec3d v = MC.player.getVelocity();
+
+        if (MC.options.sneakKey.isPressed()) {
+            // Going down: apply the velocity FlightHack refused to.
+            MC.player.setVelocity(v.x, -vSpeed, v.z);
+
+        } else if (speedOverride.isChecked() && MC.options.jumpKey.isPressed()) {
+            // Going up with override: replace what FlightHack applied with our speed.
+            MC.player.setVelocity(v.x, vSpeed, v.z);
+        }
+    }
+
+    private boolean isBlockStillMissing(SchematicVerifier verifier,
+        BlockPos block) {
+        BlockMismatch mismatch = verifier.getMismatchForPosition(block);
+        return mismatch != null && mismatch.mismatchType == MismatchType.MISSING;
+    }
+
+    private BlockPos findClosestMissingBlock(SchematicVerifier verifier) {
+        Vec3d eyes = RotationUtils.getEyesPos();
+        BlockPos closest = null;
+        double closestDistSq = Double.MAX_VALUE;
+
+        for (BlockPos pos : verifier.getSelectedMismatchBlockPositionsForRender()) {
+            BlockMismatch mismatch = verifier.getMismatchForPosition(pos);
+            if (mismatch == null || mismatch.mismatchType != MismatchType.MISSING) {
+                continue;
+            }
+            double distSq = pos.getSquaredDistance(eyes);
+            if (distSq < closestDistSq) {
+                closestDistSq = distSq;
+                closest = pos;
+            }
+        }
+
+        return closest;
     }
 
     private void clearPathing() {
         pathFinder = null;
         processor = null;
         currentGoal = null;
-        cachedTargetMissing = null;
         PathProcessor.releaseControls();
-    }
-
-    private void failAndDisable(String reason) {
-        ChatUtils.error(reason);
-        setEnabled(false);
     }
 
     private static final class MissingBlockPathFinder extends PathFinder {
 
-        public MissingBlockPathFinder(BlockPos goal) {
+        public MissingBlockPathFinder(BlockPos goal, int speed) {
             super(goal);
-            setThinkTime(10);
-        }
-
-        public MissingBlockPathFinder(MissingBlockPathFinder pathFinder) {
-            super(pathFinder);
+            setThinkSpeed(speed);
         }
 
         @Override
         protected boolean checkDone() {
             BlockPos goal = getGoal();
-
-            return done = goal.equals(current)
+            // Consider done when the player is in any adjacent cell around the
+            // goal, matching the same neighborhood used by FillerHack/ExcavatorHack.
+            return done = goal.down(2).equals(current)
                 || goal.up().equals(current)
-                || goal.down().equals(current)
                 || goal.north().equals(current)
                 || goal.south().equals(current)
                 || goal.east().equals(current)
-                || goal.west().equals(current);
+                || goal.west().equals(current)
+                || goal.down().north().equals(current)
+                || goal.down().south().equals(current)
+                || goal.down().east().equals(current)
+                || goal.down().west().equals(current);
         }
     }
 }
