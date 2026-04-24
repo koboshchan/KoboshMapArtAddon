@@ -11,13 +11,13 @@
   "environment": "*",
   "entrypoints": {
     "fabric-datagen": [
-      "com.kobosh.koboshmapartaddon.client.WurstAddonDataGenerator"
+      "com.kobosh.koboshmapartaddon.client.WurstaddonDataGenerator"
     ],
     "client": [
-      "com.kobosh.koboshmapartaddon.client.WurstAddonClient"
+      "com.kobosh.koboshmapartaddon.client.WurstaddonClient"
     ],
     "main": [
-      "com.kobosh.koboshmapartaddon.WurstAddon"
+      "com.kobosh.koboshmapartaddon.Wurstaddon"
     ]
   },
   "mixins": [
