@@ -28,6 +28,10 @@ import net.wurstclient.util.RotationUtils;
 public final class LitematicaMissingFlyHack extends Hack
     implements UpdateListener, RenderListener, AirStrafingSpeedListener {
 
+    private static final int OSCILLATION_WINDOW_TICKS = 20;
+    private static final double STATIONARY_AXIS_ALLOWANCE = 1.0;
+    private static final double MIN_DELTA_FOR_DIRECTION = 0.02;
+
     private final SliderSetting thinkSpeed = new SliderSetting("Think Speed",
         "How many path nodes to process per tick. Higher values find paths faster but may cause lag.",
         1000, 100, 5000, 100, ValueDisplay.INTEGER);
@@ -60,8 +64,13 @@ public final class LitematicaMissingFlyHack extends Hack
 
     private final CheckboxSetting skipStuck = new CheckboxSetting(
         "Skip Stuck Blocks",
-        "If a block is still missing 1.5 seconds after arriving, move to the next closest block at least 5 blocks away.",
+        "If a block is still missing for the configured delay, move to the next closest block at least 5 blocks away.",
         false);
+
+    private final SliderSetting switchWaitTicks = new SliderSetting(
+        "Switch Wait Ticks",
+        "How long to wait (in ticks) before switching to the next closest block when stuck.",
+        30, 5, 200, 1, ValueDisplay.INTEGER);
 
     private MissingBlockPathFinder pathFinder;
     private PathProcessor processor;
@@ -75,10 +84,10 @@ public final class LitematicaMissingFlyHack extends Hack
     private boolean foundMissingThisRun;
     private double lastTargetDistSq = Double.MAX_VALUE;
     private int noProgressTicks;
-    private double lastPosX = Double.NaN;
-    private double lastPosZ = Double.NaN;
-    private double prevMoveX;
-    private double prevMoveZ;
+    private final double[] xSamples = new double[OSCILLATION_WINDOW_TICKS];
+    private final double[] zSamples = new double[OSCILLATION_WINDOW_TICKS];
+    private int sampleCount;
+    private int sampleWriteIndex;
     private int xzOscillationTicks;
 
     public LitematicaMissingFlyHack() {
@@ -92,6 +101,7 @@ public final class LitematicaMissingFlyHack extends Hack
         addSetting(overrideVerticalSpeed);
         addSetting(approachHeight);
         addSetting(skipStuck);
+        addSetting(switchWaitTicks);
     }
 
     @Override
@@ -183,19 +193,19 @@ public final class LitematicaMissingFlyHack extends Hack
         }
 
         // Handle "arrived" state: we reached the goal area but the block is
-        // still missing. After 1.5 seconds (30 ticks) try the closest
+        // still missing. After the configured wait time, try the closest
         // alternative at least 5 blocks away. If none exists, keep waiting.
         if (skipStuck.isChecked() && currentGoal != null && arrivedTicks >= 0) {
             applyPlacementHeightOffset(currentGoal);
             arrivedTicks++;
-            if (arrivedTicks >= 30) {
+            if (arrivedTicks >= switchWaitTicks.getValueI()) {
                 BlockPos alt =
                     findAlternativeMissingBlock(verifier, currentGoal, 5);
                 if (alt != null) {
                     currentGoal = alt;
                     arrivedTicks = -1; // exit arrived state, navigate below
                 } else {
-                    arrivedTicks = 0; // no alternative — reset and retry in 1.5 s
+                    arrivedTicks = 0; // no alternative — reset and retry after delay
                     return;
                 }
             } else {
@@ -238,11 +248,7 @@ public final class LitematicaMissingFlyHack extends Hack
             pathFinder = new MissingBlockPathFinder(target, thinkSpeed.getValueI());
             lastTargetDistSq = Double.MAX_VALUE;
             noProgressTicks = 0;
-            lastPosX = Double.NaN;
-            lastPosZ = Double.NaN;
-            prevMoveX = 0;
-            prevMoveZ = 0;
-            xzOscillationTicks = 0;
+            resetOscillationWatchdog();
         }
 
         // Compute the path — may span multiple ticks.
@@ -266,11 +272,7 @@ public final class LitematicaMissingFlyHack extends Hack
             processor = null;
             lastTargetDistSq = Double.MAX_VALUE;
             noProgressTicks = 0;
-            lastPosX = Double.NaN;
-            lastPosZ = Double.NaN;
-            prevMoveX = 0;
-            prevMoveZ = 0;
-            xzOscillationTicks = 0;
+            resetOscillationWatchdog();
             return;
         }
 
@@ -290,11 +292,7 @@ public final class LitematicaMissingFlyHack extends Hack
                 arrivedTicks = 0;
                 lastTargetDistSq = Double.MAX_VALUE;
                 noProgressTicks = 0;
-                lastPosX = Double.NaN;
-                lastPosZ = Double.NaN;
-                prevMoveX = 0;
-                prevMoveZ = 0;
-                xzOscillationTicks = 0;
+                resetOscillationWatchdog();
                 PathProcessor.releaseControls();
             } else {
                 // Freecam camera mode makes FlightHack ignore movement updates,
@@ -327,16 +325,12 @@ public final class LitematicaMissingFlyHack extends Hack
 
                 updateXzOscillationWatchdog();
 
-                if (noProgressTicks >= 40 || xzOscillationTicks >= 20) {
+                if (noProgressTicks >= 40 || xzOscillationTicks >= 1) {
                     pathFinder = null;
                     processor = null;
                     lastTargetDistSq = Double.MAX_VALUE;
                     noProgressTicks = 0;
-                    lastPosX = Double.NaN;
-                    lastPosZ = Double.NaN;
-                    prevMoveX = 0;
-                    prevMoveZ = 0;
-                    xzOscillationTicks = 0;
+                    resetOscillationWatchdog();
                     PathProcessor.releaseControls();
                 }
             }
@@ -347,36 +341,61 @@ public final class LitematicaMissingFlyHack extends Hack
         double x = MC.player.getX();
         double z = MC.player.getZ();
 
-        if (Double.isNaN(lastPosX) || Double.isNaN(lastPosZ)) {
-            lastPosX = x;
-            lastPosZ = z;
-            prevMoveX = 0;
-            prevMoveZ = 0;
+        xSamples[sampleWriteIndex] = x;
+        zSamples[sampleWriteIndex] = z;
+        sampleWriteIndex = (sampleWriteIndex + 1) % OSCILLATION_WINDOW_TICKS;
+        if (sampleCount < OSCILLATION_WINDOW_TICKS) {
+            sampleCount++;
             xzOscillationTicks = 0;
             return;
         }
 
-        double dx = x - lastPosX;
-        double dz = z - lastPosZ;
-        lastPosX = x;
-        lastPosZ = z;
-
-        boolean xMoved = Math.abs(dx) > 0.005;
-        boolean zMoved = Math.abs(dz) > 0.005;
-        boolean xFlipped = xMoved && Math.abs(prevMoveX) > 0.005
-            && Math.signum(dx) != Math.signum(prevMoveX);
-        boolean zFlipped = zMoved && Math.abs(prevMoveZ) > 0.005
-            && Math.signum(dz) != Math.signum(prevMoveZ);
-
-        boolean oneAxisBackAndForth = (!xMoved && zFlipped) || (!zMoved && xFlipped);
-        if (oneAxisBackAndForth) {
-            xzOscillationTicks++;
-        } else {
-            xzOscillationTicks = 0;
+        double minX = Double.MAX_VALUE;
+        double maxX = -Double.MAX_VALUE;
+        double minZ = Double.MAX_VALUE;
+        double maxZ = -Double.MAX_VALUE;
+        for (int i = 0; i < OSCILLATION_WINDOW_TICKS; i++) {
+            minX = Math.min(minX, xSamples[i]);
+            maxX = Math.max(maxX, xSamples[i]);
+            minZ = Math.min(minZ, zSamples[i]);
+            maxZ = Math.max(maxZ, zSamples[i]);
         }
 
-        prevMoveX = xMoved ? dx : 0;
-        prevMoveZ = zMoved ? dz : 0;
+        double xRange = maxX - minX;
+        double zRange = maxZ - minZ;
+        int xFlipCount = countDirectionFlips(xSamples);
+        int zFlipCount = countDirectionFlips(zSamples);
+
+        boolean xStationary = xRange <= STATIONARY_AXIS_ALLOWANCE;
+        boolean zStationary = zRange <= STATIONARY_AXIS_ALLOWANCE;
+
+        boolean badOscillation = (xStationary && zFlipCount >= 4)
+            || (zStationary && xFlipCount >= 4);
+        xzOscillationTicks = badOscillation ? 1 : 0;
+    }
+
+    private int countDirectionFlips(double[] samples) {
+        int flips = 0;
+        int prevSign = 0;
+        for (int i = 1; i < samples.length; i++) {
+            double delta = samples[i] - samples[i - 1];
+            if (Math.abs(delta) < MIN_DELTA_FOR_DIRECTION) {
+                continue;
+            }
+
+            int sign = delta > 0 ? 1 : -1;
+            if (prevSign != 0 && sign != prevSign) {
+                flips++;
+            }
+            prevSign = sign;
+        }
+        return flips;
+    }
+
+    private void resetOscillationWatchdog() {
+        sampleCount = 0;
+        sampleWriteIndex = 0;
+        xzOscillationTicks = 0;
     }
 
     /**
@@ -552,11 +571,7 @@ public final class LitematicaMissingFlyHack extends Hack
         arrivedTicks = -1;
         lastTargetDistSq = Double.MAX_VALUE;
         noProgressTicks = 0;
-        lastPosX = Double.NaN;
-        lastPosZ = Double.NaN;
-        prevMoveX = 0;
-        prevMoveZ = 0;
-        xzOscillationTicks = 0;
+        resetOscillationWatchdog();
         PathProcessor.releaseControls();
     }
 
