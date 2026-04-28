@@ -60,7 +60,7 @@ public final class LitematicaMissingFlyHack extends Hack
 
     private final CheckboxSetting skipStuck = new CheckboxSetting(
         "Skip Stuck Blocks",
-        "If a block is still missing 5 seconds after arriving, move to the next closest block at least 5 blocks away.",
+        "If a block is still missing 1.5 seconds after arriving, move to the next closest block at least 5 blocks away.",
         false);
 
     private MissingBlockPathFinder pathFinder;
@@ -73,6 +73,13 @@ public final class LitematicaMissingFlyHack extends Hack
     private boolean enabledFlightForThisHack;
     private boolean notifiedNoMissing;
     private boolean foundMissingThisRun;
+    private double lastTargetDistSq = Double.MAX_VALUE;
+    private int noProgressTicks;
+    private double lastPosX = Double.NaN;
+    private double lastPosZ = Double.NaN;
+    private double prevMoveX;
+    private double prevMoveZ;
+    private int xzOscillationTicks;
 
     public LitematicaMissingFlyHack() {
         super("LitematicaMissingFly");
@@ -176,18 +183,19 @@ public final class LitematicaMissingFlyHack extends Hack
         }
 
         // Handle "arrived" state: we reached the goal area but the block is
-        // still missing. After 5 seconds (100 ticks) try the closest alternative
-        // at least 5 blocks away. If none exists, keep waiting.
+        // still missing. After 1.5 seconds (30 ticks) try the closest
+        // alternative at least 5 blocks away. If none exists, keep waiting.
         if (skipStuck.isChecked() && currentGoal != null && arrivedTicks >= 0) {
+            applyPlacementHeightOffset(currentGoal);
             arrivedTicks++;
-            if (arrivedTicks >= 100) {
+            if (arrivedTicks >= 30) {
                 BlockPos alt =
                     findAlternativeMissingBlock(verifier, currentGoal, 5);
                 if (alt != null) {
                     currentGoal = alt;
                     arrivedTicks = -1; // exit arrived state, navigate below
                 } else {
-                    arrivedTicks = 0; // no alternative — reset and retry in 5 s
+                    arrivedTicks = 0; // no alternative — reset and retry in 1.5 s
                     return;
                 }
             } else {
@@ -228,6 +236,13 @@ public final class LitematicaMissingFlyHack extends Hack
 
         if (pathFinder == null) {
             pathFinder = new MissingBlockPathFinder(target, thinkSpeed.getValueI());
+            lastTargetDistSq = Double.MAX_VALUE;
+            noProgressTicks = 0;
+            lastPosX = Double.NaN;
+            lastPosZ = Double.NaN;
+            prevMoveX = 0;
+            prevMoveZ = 0;
+            xzOscillationTicks = 0;
         }
 
         // Compute the path — may span multiple ticks.
@@ -248,19 +263,38 @@ public final class LitematicaMissingFlyHack extends Hack
         if (processor != null
             && !pathFinder.isPathStillValid(processor.getIndex())) {
             pathFinder = new MissingBlockPathFinder(target, thinkSpeed.getValueI());
+            processor = null;
+            lastTargetDistSq = Double.MAX_VALUE;
+            noProgressTicks = 0;
+            lastPosX = Double.NaN;
+            lastPosZ = Double.NaN;
+            prevMoveX = 0;
+            prevMoveZ = 0;
+            xzOscillationTicks = 0;
             return;
         }
 
         // Follow the path.
         if (processor != null) {
+            Vec3d targetCenter = Vec3d.ofCenter(target);
+            double beforeDistSq = targetCenter.squaredDistanceTo(
+                MC.player.getX(), MC.player.getY(), MC.player.getZ());
             processor.process();
 
             if (processor.isDone()) {
                 // Arrived at the target area. Transition to the "arrived" waiting
                 // state — keep currentGoal so stuck detection can run in onUpdate.
+                applyPlacementHeightOffset(goal);
                 pathFinder = null;
                 processor = null;
                 arrivedTicks = 0;
+                lastTargetDistSq = Double.MAX_VALUE;
+                noProgressTicks = 0;
+                lastPosX = Double.NaN;
+                lastPosZ = Double.NaN;
+                prevMoveX = 0;
+                prevMoveZ = 0;
+                xzOscillationTicks = 0;
                 PathProcessor.releaseControls();
             } else {
                 // Freecam camera mode makes FlightHack ignore movement updates,
@@ -278,8 +312,71 @@ public final class LitematicaMissingFlyHack extends Hack
                     // upward velocity with our custom speed.
                     applyVerticalOverride();
                 }
+
+                double afterDistSq = targetCenter.squaredDistanceTo(
+                    MC.player.getX(), MC.player.getY(), MC.player.getZ());
+                // Re-path if we make no measurable progress for too long. This
+                // avoids rare spin/oscillation states where controls keep firing
+                // but the player does not get closer to the target.
+                if (afterDistSq + 0.01 < beforeDistSq || afterDistSq + 0.01 < lastTargetDistSq) {
+                    noProgressTicks = 0;
+                } else {
+                    noProgressTicks++;
+                }
+                lastTargetDistSq = afterDistSq;
+
+                updateXzOscillationWatchdog();
+
+                if (noProgressTicks >= 40 || xzOscillationTicks >= 20) {
+                    pathFinder = null;
+                    processor = null;
+                    lastTargetDistSq = Double.MAX_VALUE;
+                    noProgressTicks = 0;
+                    lastPosX = Double.NaN;
+                    lastPosZ = Double.NaN;
+                    prevMoveX = 0;
+                    prevMoveZ = 0;
+                    xzOscillationTicks = 0;
+                    PathProcessor.releaseControls();
+                }
             }
         }
+    }
+
+    private void updateXzOscillationWatchdog() {
+        double x = MC.player.getX();
+        double z = MC.player.getZ();
+
+        if (Double.isNaN(lastPosX) || Double.isNaN(lastPosZ)) {
+            lastPosX = x;
+            lastPosZ = z;
+            prevMoveX = 0;
+            prevMoveZ = 0;
+            xzOscillationTicks = 0;
+            return;
+        }
+
+        double dx = x - lastPosX;
+        double dz = z - lastPosZ;
+        lastPosX = x;
+        lastPosZ = z;
+
+        boolean xMoved = Math.abs(dx) > 0.005;
+        boolean zMoved = Math.abs(dz) > 0.005;
+        boolean xFlipped = xMoved && Math.abs(prevMoveX) > 0.005
+            && Math.signum(dx) != Math.signum(prevMoveX);
+        boolean zFlipped = zMoved && Math.abs(prevMoveZ) > 0.005
+            && Math.signum(dz) != Math.signum(prevMoveZ);
+
+        boolean oneAxisBackAndForth = (!xMoved && zFlipped) || (!zMoved && xFlipped);
+        if (oneAxisBackAndForth) {
+            xzOscillationTicks++;
+        } else {
+            xzOscillationTicks = 0;
+        }
+
+        prevMoveX = xMoved ? dx : 0;
+        prevMoveZ = zMoved ? dz : 0;
     }
 
     /**
@@ -295,13 +392,28 @@ public final class LitematicaMissingFlyHack extends Hack
             ? overrideVerticalSpeed.getValue()
             : WURST.getHax().flightHack.getActualVerticalSpeed();
 
-        double vx = 0;
-        double vz = 0;
-        if (MC.options.forwardKey.isPressed()) {
-            double yawRad = Math.toRadians(MC.player.getYaw());
-            vx = -Math.sin(yawRad) * hSpeed;
-            vz = Math.cos(yawRad) * hSpeed;
+        double forward = 0;
+        double strafe = 0;
+        if (MC.options.forwardKey.isPressed())
+            forward += 1;
+        if (MC.options.backKey.isPressed())
+            forward -= 1;
+        if (MC.options.leftKey.isPressed())
+            strafe += 1;
+        if (MC.options.rightKey.isPressed())
+            strafe -= 1;
+
+        if (forward != 0 && strafe != 0) {
+            double invSqrt2 = 1 / Math.sqrt(2);
+            forward *= invSqrt2;
+            strafe *= invSqrt2;
         }
+
+        double yawRad = Math.toRadians(MC.player.getYaw());
+        double sinYaw = Math.sin(yawRad);
+        double cosYaw = Math.cos(yawRad);
+        double vx = (-sinYaw * forward + cosYaw * strafe) * hSpeed;
+        double vz = (cosYaw * forward + sinYaw * strafe) * hSpeed;
 
         double vy = 0;
         if (MC.options.sneakKey.isPressed()) {
@@ -345,6 +457,42 @@ public final class LitematicaMissingFlyHack extends Hack
         BlockPos block) {
         BlockMismatch mismatch = verifier.getMismatchForPosition(block);
         return mismatch != null && mismatch.mismatchType == MismatchType.MISSING;
+    }
+
+    private void applyPlacementHeightOffset(BlockPos goal) {
+        if (MC.player == null || MC.world == null) {
+            return;
+        }
+
+        double yOffset = getPlacementYOffset(goal);
+        if (yOffset == 0) {
+            return;
+        }
+
+        double targetY = goal.getY() + yOffset;
+        if (Math.abs(MC.player.getY() - targetY) < 0.01) {
+            return;
+        }
+
+        MC.player.setPosition(MC.player.getX(), targetY, MC.player.getZ());
+    }
+
+    private double getPlacementYOffset(BlockPos goal) {
+        boolean hasBlockAbove = !MC.world.getBlockState(goal.up()).isAir();
+        boolean hasBlockBelow = !MC.world.getBlockState(goal.down()).isAir();
+
+        if (hasBlockAbove && !hasBlockBelow) {
+            // Goal is under a block -> stay half a block lower.
+            return -0.5;
+        }
+
+        if (hasBlockBelow && !hasBlockAbove) {
+            // Goal is above a block -> stay half a block higher.
+            return 0.5;
+        }
+
+        // If both or neither are true, don't force an offset.
+        return 0;
     }
 
     /**
@@ -402,6 +550,13 @@ public final class LitematicaMissingFlyHack extends Hack
         currentGoal = null;
         missingBlocksLeft = 0;
         arrivedTicks = -1;
+        lastTargetDistSq = Double.MAX_VALUE;
+        noProgressTicks = 0;
+        lastPosX = Double.NaN;
+        lastPosZ = Double.NaN;
+        prevMoveX = 0;
+        prevMoveZ = 0;
+        xzOscillationTicks = 0;
         PathProcessor.releaseControls();
     }
 
