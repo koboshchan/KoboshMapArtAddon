@@ -28,7 +28,7 @@ import net.wurstclient.util.RotationUtils;
 public final class LitematicaMissingFlyHack extends Hack
     implements UpdateListener, RenderListener, AirStrafingSpeedListener {
 
-    private static final int OSCILLATION_WINDOW_TICKS = 20;
+    private static final int OSCILLATION_WINDOW_TICKS = 2;
     private static final double STATIONARY_AXIS_ALLOWANCE = 1.0;
     private static final double MIN_DELTA_FOR_DIRECTION = 0.02;
 
@@ -84,8 +84,8 @@ public final class LitematicaMissingFlyHack extends Hack
     private boolean foundMissingThisRun;
     private double lastTargetDistSq = Double.MAX_VALUE;
     private int noProgressTicks;
-    private final double[] xSamples = new double[OSCILLATION_WINDOW_TICKS];
-    private final double[] zSamples = new double[OSCILLATION_WINDOW_TICKS];
+    private final double[] xSamples = new double[2];
+    private final double[] zSamples = new double[2];
     private int sampleCount;
     private int sampleWriteIndex;
     private int xzOscillationTicks;
@@ -369,25 +369,17 @@ public final class LitematicaMissingFlyHack extends Hack
         boolean xStationary = xRange <= STATIONARY_AXIS_ALLOWANCE;
         boolean zStationary = zRange <= STATIONARY_AXIS_ALLOWANCE;
 
-        boolean badOscillation = (xStationary && zFlipCount >= 4)
-            || (zStationary && xFlipCount >= 4);
+        boolean badOscillation = (xFlipCount >= 1) || (zFlipCount >= 1);
         xzOscillationTicks = badOscillation ? 1 : 0;
     }
 
     private int countDirectionFlips(double[] samples) {
         int flips = 0;
-        int prevSign = 0;
         for (int i = 1; i < samples.length; i++) {
             double delta = samples[i] - samples[i - 1];
-            if (Math.abs(delta) < MIN_DELTA_FOR_DIRECTION) {
-                continue;
-            }
-
-            int sign = delta > 0 ? 1 : -1;
-            if (prevSign != 0 && sign != prevSign) {
+            if (Math.abs(delta) >= MIN_DELTA_FOR_DIRECTION) {
                 flips++;
             }
-            prevSign = sign;
         }
         return flips;
     }
