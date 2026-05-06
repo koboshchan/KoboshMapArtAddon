@@ -20,14 +20,21 @@ import net.wurstclient.Category;
 import net.wurstclient.SearchTags;
 import net.wurstclient.events.UpdateListener;
 import net.wurstclient.hack.Hack;
+import net.wurstclient.settings.CheckboxSetting;
 import net.wurstclient.util.ChatUtils;
 
 @SearchTags({"schematic", "air walk", "airwalk", "litematica", "ghost"})
 public final class SchematicAirWalkHack extends Hack implements UpdateListener {
 
+	private final CheckboxSetting xzWalls = new CheckboxSetting("XZ Walls",
+		"Also treat missing schematic blocks on the north/south/east/west sides"
+			+ " as solid walls, not just the floor below.",
+		false);
+
 	public SchematicAirWalkHack() {
 		super("SchematicAirWalk");
 		setCategory(Category.MOVEMENT);
+		addSetting(xzWalls);
 	}
 
 	@Override
@@ -55,11 +62,64 @@ public final class SchematicAirWalkHack extends Hack implements UpdateListener {
 		SchematicVerifier verifier = placement.getSchematicVerifier();
 		BlockPos playerPos = MC.player.getBlockPos();
 
-		// Check the block below the player
+		// Y plane: block below the player
 		BlockPos blockBelow = playerPos.down();
 		if (isGhostBlock(verifier, blockBelow)) {
-			// Make the ghost block solid for collision
-			makeBlockSolid(blockBelow);
+			makeBlockSolidY(blockBelow);
+		}
+
+		// XZ planes: blocks on all four horizontal sides (optional)
+		if (xzWalls.isChecked()) {
+			applyXzWalls(verifier, playerPos);
+		}
+	}
+
+	/**
+	 * Prevent the player from passing through ghost blocks on the X and Z axes.
+	 * Checks all four horizontal neighbours of the player's block position and
+	 * clamps the player's position + velocity when they would overlap.
+	 */
+	private void applyXzWalls(SchematicVerifier verifier, BlockPos playerPos) {
+		double px = MC.player.getX();
+		double pz = MC.player.getZ();
+		double vx = MC.player.getVelocity().x;
+		double vy = MC.player.getVelocity().y;
+		double vz = MC.player.getVelocity().z;
+
+		// Block integer origin of the block the player currently stands in.
+		int bx = playerPos.getX(); // block spans [bx, bx+1]
+		int bz = playerPos.getZ(); // block spans [bz, bz+1]
+
+		// Half-width of player bounding box (0.3 on each side).
+		final double HW = 0.3;
+
+		boolean changedVx = false;
+		boolean changedVz = false;
+
+		// EAST face: ghost block at (bx+1, *, bz). Its west face is at x = bx+1.
+		if (isGhostBlock(verifier, playerPos.east()) && px + HW > bx + 1) {
+			px = bx + 1 - HW;
+			if (vx > 0) { vx = 0; changedVx = true; }
+		}
+		// WEST face: ghost block at (bx-1, *, bz). Its east face is at x = bx.
+		if (isGhostBlock(verifier, playerPos.west()) && px - HW < bx) {
+			px = bx + HW;
+			if (vx < 0) { vx = 0; changedVx = true; }
+		}
+		// SOUTH face: ghost block at (bx, *, bz+1). Its north face is at z = bz+1.
+		if (isGhostBlock(verifier, playerPos.south()) && pz + HW > bz + 1) {
+			pz = bz + 1 - HW;
+			if (vz > 0) { vz = 0; changedVz = true; }
+		}
+		// NORTH face: ghost block at (bx, *, bz-1). Its south face is at z = bz.
+		if (isGhostBlock(verifier, playerPos.north()) && pz - HW < bz) {
+			pz = bz + HW;
+			if (vz < 0) { vz = 0; changedVz = true; }
+		}
+
+		if (changedVx || changedVz) {
+			MC.player.setPosition(px, MC.player.getY(), pz);
+			MC.player.setVelocity(vx, vy, vz);
 		}
 	}
 
@@ -74,9 +134,9 @@ public final class SchematicAirWalkHack extends Hack implements UpdateListener {
 
 	/**
 	 * Temporarily make a block solid by setting player velocity and position
-	 * to simulate standing on it.
+	 * to simulate standing on it (Y axis / floor).
 	 */
-	private void makeBlockSolid(BlockPos blockPos) {
+	private void makeBlockSolidY(BlockPos blockPos) {
 		// Ensure player doesn't fall through by stopping downward velocity
 		if (MC.player.getVelocity().y < 0) {
 			MC.player.setVelocity(MC.player.getVelocity().x, 0, MC.player.getVelocity().z);
