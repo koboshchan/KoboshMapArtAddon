@@ -6,8 +6,11 @@ import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.BlockMismatch;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.MismatchType;
 import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 import net.wurstclient.Category;
 import net.wurstclient.SearchTags;
 import net.wurstclient.ai.PathFinder;
@@ -72,6 +75,16 @@ public final class LitematicaMissingFlyHack extends Hack
         "How long to wait (in ticks) before switching to the next closest block when stuck.",
         30, 5, 200, 1, ValueDisplay.INTEGER);
 
+    private final CheckboxSetting teleportAssist = new CheckboxSetting(
+        "Teleport Assist",
+        "Teleports directly to the target when a clear line exists, otherwise keeps flying the path.",
+        true);
+
+    private final SliderSetting teleportRange = new SliderSetting(
+        "Teleport Range",
+        "Maximum teleport distance used by Teleport Assist.",
+        16, 4, 48, 1, ValueDisplay.INTEGER);
+
     private MissingBlockPathFinder pathFinder;
     private PathProcessor processor;
     private BlockPos currentGoal;
@@ -102,6 +115,8 @@ public final class LitematicaMissingFlyHack extends Hack
         addSetting(approachHeight);
         addSetting(skipStuck);
         addSetting(switchWaitTicks);
+        addSetting(teleportAssist);
+        addSetting(teleportRange);
     }
 
     @Override
@@ -278,6 +293,18 @@ public final class LitematicaMissingFlyHack extends Hack
 
         // Follow the path.
         if (processor != null) {
+            if (teleportAssist.isChecked() && tryTeleportToTarget(target)) {
+                applyPlacementHeightOffset(goal);
+                pathFinder = null;
+                processor = null;
+                arrivedTicks = 0;
+                lastTargetDistSq = Double.MAX_VALUE;
+                noProgressTicks = 0;
+                resetOscillationWatchdog();
+                PathProcessor.releaseControls();
+                return;
+            }
+
             Vec3d targetCenter = Vec3d.ofCenter(target);
             double beforeDistSq = targetCenter.squaredDistanceTo(
                 MC.player.getX(), MC.player.getY(), MC.player.getZ());
@@ -335,6 +362,47 @@ public final class LitematicaMissingFlyHack extends Hack
                 }
             }
         }
+    }
+
+    private boolean tryTeleportToTarget(BlockPos target) {
+        if (MC.player == null || MC.world == null) {
+            return false;
+        }
+
+        Vec3d destination = Vec3d.ofBottomCenter(target).add(0, 0.1, 0);
+        double maxRangeSq = teleportRange.getValue() * teleportRange.getValue();
+        double distSq = MC.player.squaredDistanceTo(destination);
+        if (distSq > maxRangeSq) {
+            return false;
+        }
+
+        BlockPos feet = BlockPos.ofFloored(destination);
+        BlockPos head = feet.up();
+        boolean blocked = !MC.world.getBlockState(feet).isReplaceable()
+            || !MC.world.getBlockState(head).isReplaceable();
+        if (blocked) {
+            return false;
+        }
+
+        Vec3d from = MC.player.getEyePos();
+        Vec3d to = destination.add(0, MC.player.getStandingEyeHeight(), 0);
+        HitResult hit = MC.world.raycast(new RaycastContext(from, to,
+            RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.FluidHandling.NONE, MC.player));
+
+        if (hit.getType() == HitResult.Type.BLOCK) {
+            BlockPos hitPos = ((BlockHitResult)hit).getBlockPos();
+            boolean destinationEdgeHit = hitPos.equals(feet)
+                || hitPos.equals(head)
+                || hitPos.equals(feet.down());
+            if (!destinationEdgeHit) {
+                return false;
+            }
+        }
+
+        MC.player.setPosition(destination.x, destination.y, destination.z);
+        MC.player.setVelocity(0, 0.2, 0);
+        return true;
     }
 
     private void updateXzOscillationWatchdog() {
